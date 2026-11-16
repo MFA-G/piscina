@@ -1,5 +1,6 @@
 import * as assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { getEventListeners } from 'node:events';
 import { resolve } from 'node:path';
 import Piscina, { PiscinaTask, TaskQueue } from '..';
 
@@ -85,6 +86,48 @@ test('will reject items over task queue limit', async (t) => {
   promises.push(pool.run('while (true) {}').catch(err => {
     assert.strictEqual(err.code, 'PISCINA_ERR_TASK_QUEUE_LIMIT');
   }));
+
+  await pool.destroy();
+  await Promise.all(promises);
+});
+
+test('will reject items with an AbortSignal over task queue limit', async () => {
+  const pool = new Piscina({
+    filename: resolve(__dirname, 'fixtures/eval.js'),
+    minThreads: 1,
+    maxThreads: 1,
+    maxQueue: 2
+  });
+
+  // Wait for a ready Worker so the next task keeps it busy.
+  assert.strictEqual(await pool.run('1 + 1'), 2);
+
+  const queueController = new AbortController();
+  const rejectedController = new AbortController();
+
+  const expectedQueuedAbort = (err: Error & { code?: string, cause?: string }) => {
+    assert.strictEqual(err.code, 'PISCINA_ERR_ABORT');
+    assert.strictEqual(err.cause, 'pool is being destroyed');
+  };
+
+  const promises = [
+    // The running task is terminated together with its Worker.
+    pool.run('while (true) {}').catch((err: Error & { code?: string }) => {
+      assert.strictEqual(err.code, 'PISCINA_ERR_THREAD_TERMINATION');
+    }),
+    pool.run('while (true) {}', { signal: queueController.signal }).catch(expectedQueuedAbort),
+    pool.run('while (true) {}', { signal: queueController.signal }).catch(expectedQueuedAbort)
+  ];
+
+  assert.strictEqual(pool.queueSize, 2);
+
+  await assert.rejects(
+    pool.run('while (true) {}', { signal: rejectedController.signal }),
+    { code: 'PISCINA_ERR_TASK_QUEUE_LIMIT' }
+  );
+
+  // A task refused by the queue limit must not stay attached to the signal.
+  assert.strictEqual(getEventListeners(rejectedController.signal, 'abort').length, 0);
 
   await pool.destroy();
   await Promise.all(promises);

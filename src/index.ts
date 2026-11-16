@@ -574,14 +574,23 @@ class ThreadPool {
       taskInfo.setAbortListener(signal);
     }
 
-    if (this.taskQueue.size > 0) {
+    // Tasks submitted with an AbortSignal are held in `skipQueue` instead of
+    // `taskQueue` when no Worker is ready, so the queue limit has to account
+    // for both. Checking only `taskQueue` let signalled tasks queue without
+    // any bound when no other task was waiting.
+    const queuedTasks = this.taskQueue.size + this.skipQueue.length;
+
+    if (queuedTasks > 0) {
       const totalCapacity = this.options.maxQueue + this.pendingCapacity();
-      if (this.taskQueue.size >= totalCapacity) {
-        if (this.options.maxQueue === 0) {
-          reject(Errors.NoTaskQueueAvailable());
-        } else {
-          reject(Errors.TaskQueueAtLimit());
-        }
+      if (queuedTasks >= totalCapacity) {
+        const err = this.options.maxQueue === 0
+          ? Errors.NoTaskQueueAvailable()
+          : Errors.TaskQueueAtLimit();
+
+        // The task will never run, so release its AbortSignal listener and
+        // async resource before handing the error to the caller.
+        taskInfo.discard();
+        reject(err);
       } else {
         this.taskQueue.push(taskInfo);
         // Eagerly spawn additional workers up to maxThreads while there is
@@ -610,6 +619,7 @@ class ThreadPool {
       // We reject if no task queue set and no more pending capacity.
       // TODO(@metcoder95): maybe auto expand the queue if no task queue set and we're at capacity?
       if (this.options.maxQueue <= 0 && this.pendingCapacity() === 0) {
+        taskInfo.discard();
         reject(Errors.NoTaskQueueAvailable());
       } else {
         // A new task has never been queued, so it always goes to the tail.

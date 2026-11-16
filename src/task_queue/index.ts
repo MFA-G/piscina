@@ -135,6 +135,14 @@ export class TaskInfo extends AsyncResource implements Task {
       this._abortCleaner?.();
     }
 
+    // Release a task that was refused before it could run. The callback is not
+    // invoked, so refusals keep not counting as completed tasks.
+    discard () : void {
+      this._abortCleaner?.();
+      this._abortCleaner = null;
+      this.emitDestroy(); // `TaskInfo`s are used only once.
+    }
+
     get [kQueueOptions] () : {} | null {
       return this.task?.[kQueueOptions] ?? null;
     }
